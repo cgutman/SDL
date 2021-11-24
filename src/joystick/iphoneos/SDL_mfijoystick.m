@@ -564,6 +564,9 @@ IOS_JoystickInit(void)
 #endif
 
 #ifdef SDL_JOYSTICK_MFI
+    #error hi
+
+
         /* GameController.framework was added in iOS 7. */
         if (![GCController class]) {
             return 0;
