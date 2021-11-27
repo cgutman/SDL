@@ -1,0 +1,24 @@
+name: Build (UWP)
+
+on: [push, pull_request]
+
+jobs:
+  Build:
+    name: ${{ matrix.platform.name }}
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+        - { name: UWP (x86),    platform: Win32 }
+        - { name: UWP (x64),    platform: x64 }
+        - { name: UWP (ARM),    platform: ARM }
+        - { name: UWP (ARM64),  platform: ARM64 }
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Add MSBuild to PATH
+      uses: microsoft/setup-msbuild@v1.1
+    - name: Build
+      run: msbuild.exe VisualC-WinRT\SDL-UWP.sln /t:Build /p:Configuration=Release;Platform=${{ matrix.platform.platform }}
