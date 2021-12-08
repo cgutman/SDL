@@ -73,7 +73,7 @@ typedef struct SDL_evdevlist_item
     /* TODO: expand on this to have data for every possible class (mouse,
        keyboard, touchpad, etc.). Also there's probably some things in here we
        can pull out to the SDL_evdevlist_item i.e. name */
-    int is_touchscreen;
+    SDL_bool is_touchscreen;
     struct {
         char* name;
 
@@ -94,6 +94,7 @@ typedef struct SDL_evdevlist_item
             int x, y, pressure;
         } * slots;
 
+        SDL_bool is_mouse;
     } * touchscreen_data;
 
     SDL_bool high_res_wheel;
@@ -225,11 +226,8 @@ static void SDL_EVDEV_udev_callback(SDL_UDEV_deviceevent udev_event, int udev_cl
 
     switch(udev_event) {
     case SDL_UDEV_DEVICEADDED:
-        if (udev_class & SDL_UDEV_DEVICE_TOUCHPAD) {
-            udev_class |= SDL_UDEV_DEVICE_TOUCHSCREEN;
-        }
-
-        if (!(udev_class & (SDL_UDEV_DEVICE_MOUSE | SDL_UDEV_DEVICE_KEYBOARD | SDL_UDEV_DEVICE_TOUCHSCREEN)))
+        if (!(udev_class & (SDL_UDEV_DEVICE_MOUSE | SDL_UDEV_DEVICE_KEYBOARD |
+                            SDL_UDEV_DEVICE_TOUCHSCREEN | SDL_UDEV_DEVICE_TOUCHPAD)))
             return;
 
         if ((udev_class & SDL_UDEV_DEVICE_JOYSTICK))
@@ -361,16 +359,14 @@ SDL_EVDEV_Poll(void)
                             if (item->touchscreen_data->max_slots != 1)
                                 break;
                             item->touchscreen_data->slots[0].x = events[i].value;
-                        } else
-                            SDL_SendMouseMotion(mouse->focus, mouse->mouseID, SDL_FALSE, events[i].value, mouse->y);
+                        }
                         break;
                     case ABS_Y:
                         if (item->is_touchscreen) {
                             if (item->touchscreen_data->max_slots != 1)
                                 break;
                             item->touchscreen_data->slots[0].y = events[i].value;
-                        } else
-                            SDL_SendMouseMotion(mouse->focus, mouse->mouseID, SDL_FALSE, mouse->x, events[i].value);
+                        }
                         break;
                     default:
                         break;
@@ -424,25 +420,41 @@ SDL_EVDEV_Poll(void)
                                 norm_pressure = 1.0f;
                             }
 
-                            /* FIXME: the touch's window shouldn't be null, but
-                             * the coordinate space of touch positions needs to
-                             * be window-relative in that case. */
-                            switch(item->touchscreen_data->slots[j].delta) {
-                            case EVDEV_TOUCH_SLOTDELTA_DOWN:
-                                SDL_SendTouch(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, SDL_TRUE, norm_x, norm_y, norm_pressure);
-                                item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
-                                break;
-                            case EVDEV_TOUCH_SLOTDELTA_UP:
-                                SDL_SendTouch(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, SDL_FALSE, norm_x, norm_y, norm_pressure);
-                                item->touchscreen_data->slots[j].tracking_id = -1;
-                                item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
-                                break;
-                            case EVDEV_TOUCH_SLOTDELTA_MOVE:
-                                SDL_SendTouchMotion(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, norm_x, norm_y, norm_pressure);
-                                item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
-                                break;
-                            default:
-                                break;
+                            if (item->touchscreen_data->is_mouse) {
+                                if (mouse->focus) {
+                                    SDL_Rect display_bounds;
+                                    int windrel_x, windrel_y;
+
+                                    /* FIXME: This should probably be the entire desktop area, but this is the best we can do for now */
+                                    SDL_GetDisplayBounds(SDL_GetWindowDisplayIndex(mouse->focus), &display_bounds);
+
+                                    /* Convert device normalized coordinates into window-relative coordinates */
+                                    windrel_x = (norm_x * display_bounds.w) - mouse->focus->x;
+                                    windrel_y = (norm_y * display_bounds.h) - mouse->focus->y;
+
+                                    SDL_SendMouseMotion(mouse->focus, mouse->mouseID, SDL_FALSE, windrel_x, windrel_y);
+                                }
+                            } else {
+                                /* FIXME: the touch's window shouldn't be null, but
+                                 * the coordinate space of touch positions needs to
+                                 * be window-relative in that case. */
+                                switch(item->touchscreen_data->slots[j].delta) {
+                                case EVDEV_TOUCH_SLOTDELTA_DOWN:
+                                    SDL_SendTouch(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, SDL_TRUE, norm_x, norm_y, norm_pressure);
+                                    item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
+                                    break;
+                                case EVDEV_TOUCH_SLOTDELTA_UP:
+                                    SDL_SendTouch(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, SDL_FALSE, norm_x, norm_y, norm_pressure);
+                                    item->touchscreen_data->slots[j].tracking_id = -1;
+                                    item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
+                                    break;
+                                case EVDEV_TOUCH_SLOTDELTA_MOVE:
+                                    SDL_SendTouchMotion(item->fd, item->touchscreen_data->slots[j].tracking_id, NULL, norm_x, norm_y, norm_pressure);
+                                    item->touchscreen_data->slots[j].delta = EVDEV_TOUCH_SLOTDELTA_NONE;
+                                    break;
+                                default:
+                                    break;
+                                }
                             }
                         }
 
@@ -490,7 +502,7 @@ SDL_EVDEV_translate_keycode(int keycode)
 
 #ifdef SDL_USE_LIBUDEV
 static int
-SDL_EVDEV_init_touchscreen(SDL_evdevlist_item* item)
+SDL_EVDEV_init_touchscreen(SDL_evdevlist_item* item, int udev_class)
 {
     int ret, i;
     unsigned long xreq, yreq;
@@ -527,6 +539,7 @@ SDL_EVDEV_init_touchscreen(SDL_evdevlist_item* item)
         item->touchscreen_data->max_slots = 1;
         xreq = EVIOCGABS(ABS_X);
         yreq = EVIOCGABS(ABS_Y);
+        item->touchscreen_data->is_mouse = (udev_class & SDL_UDEV_DEVICE_MOUSE) != 0;
     } else {
         item->touchscreen_data->max_slots = abs_info.maximum + 1;
         xreq = EVIOCGABS(ABS_MT_POSITION_X);
@@ -576,14 +589,17 @@ SDL_EVDEV_init_touchscreen(SDL_evdevlist_item* item)
         item->touchscreen_data->slots[i].tracking_id = -1;
     }
 
-    ret = SDL_AddTouch(item->fd, /* I guess our fd is unique enough */
-        SDL_TOUCH_DEVICE_DIRECT,
-        item->touchscreen_data->name);
-    if (ret < 0) {
-        SDL_free(item->touchscreen_data->slots);
-        SDL_free(item->touchscreen_data->name);
-        SDL_free(item->touchscreen_data);
-        return ret;
+    /* Absolute mouse devices will generate mouse events, not touch events */
+    if (!item->touchscreen_data->is_mouse) {
+        ret = SDL_AddTouch(item->fd, /* I guess our fd is unique enough */
+            (udev_class & SDL_UDEV_DEVICE_TOUCHSCREEN) ? SDL_TOUCH_DEVICE_DIRECT : SDL_TOUCH_DEVICE_INDIRECT_ABSOLUTE,
+            item->touchscreen_data->name);
+        if (ret < 0) {
+            SDL_free(item->touchscreen_data->slots);
+            SDL_free(item->touchscreen_data->name);
+            SDL_free(item->touchscreen_data);
+            return ret;
+        }
     }
 
     return 0;
@@ -733,6 +749,8 @@ SDL_EVDEV_device_added(const char *dev_path, int udev_class)
     int ret;
     SDL_evdevlist_item *item;
     unsigned long relbit[NBITS(REL_MAX)] = { 0 };
+    unsigned long absbit[NBITS(ABS_MAX)] = { 0 };
+    SDL_bool has_abs_xy = SDL_FALSE;
 
     /* Check to make sure it's not already in list. */
     for (item = _this->first; item != NULL; item = item->next) {
@@ -764,10 +782,16 @@ SDL_EVDEV_device_added(const char *dev_path, int udev_class)
         item->high_res_hwheel = test_bit(REL_HWHEEL_HI_RES, relbit);
     }
 
-    if (udev_class & SDL_UDEV_DEVICE_TOUCHSCREEN) {
-        item->is_touchscreen = 1;
+    if (ioctl(item->fd, EVIOCGBIT(EV_ABS, sizeof(absbit)), absbit) >= 0) {
+        has_abs_xy = test_bit(ABS_X, absbit) && test_bit(ABS_Y, absbit);
+    }
 
-        if ((ret = SDL_EVDEV_init_touchscreen(item)) < 0) {
+    /* Touchpads and absolute mice are treated as a degenerate case of a touchscreen */
+    if ((udev_class & (SDL_UDEV_DEVICE_TOUCHSCREEN | SDL_UDEV_DEVICE_TOUCHPAD)) ||
+        ((udev_class & SDL_UDEV_DEVICE_MOUSE) && has_abs_xy)) {
+        item->is_touchscreen = SDL_TRUE;
+
+        if ((ret = SDL_EVDEV_init_touchscreen(item, udev_class)) < 0) {
             close(item->fd);
             SDL_free(item->path);
             SDL_free(item);
