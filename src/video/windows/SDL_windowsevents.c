@@ -430,6 +430,7 @@ WIN_UpdateFocus(SDL_Window *window, SDL_bool expect_focus)
         if (!SDL_GetMouse()->relative_mode) {
             GetCursorPos(&cursorPos);
             ScreenToClient(hwnd, &cursorPos);
+            WIN_ClientPointToSDL(window, &cursorPos.x, &cursorPos.y);
             SDL_SendMouseMotion(window, 0, 0, cursorPos.x, cursorPos.y);
         }
 
@@ -911,6 +912,7 @@ WIN_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
                 POINT cursorPos;
                 GetCursorPos(&cursorPos);
                 ScreenToClient(hwnd, &cursorPos);
+                WIN_ClientPointToSDL(data->window, &cursorPos.x, &cursorPos.y);
                 mouse = SDL_GetMouse();
                 if (!mouse->was_touch_mouse_events) { /* we're not a touch handler causing a mouse leave? */
                     SDL_SendMouseMotion(data->window, 0, 0, cursorPos.x, cursorPos.y);
@@ -1678,6 +1680,7 @@ static void WIN_UpdateMouseCapture()
                 SDL_bool swapButtons = GetSystemMetrics(SM_SWAPBUTTON) != 0;
                 SDL_MouseID mouseID = SDL_GetMouse()->mouseID;
 
+                WIN_ClientPointToSDL(data->window, &pt.x, &pt.y);
                 SDL_SendMouseMotion(data->window, mouseID, 0, (int)pt.x, (int)pt.y);
                 SDL_SendMouseButton(data->window, mouseID, GetAsyncKeyState(VK_LBUTTON) & 0x8000 ? SDL_PRESSED : SDL_RELEASED, !swapButtons ? SDL_BUTTON_LEFT : SDL_BUTTON_RIGHT);
                 SDL_SendMouseButton(data->window, mouseID, GetAsyncKeyState(VK_RBUTTON) & 0x8000 ? SDL_PRESSED : SDL_RELEASED, !swapButtons ? SDL_BUTTON_RIGHT : SDL_BUTTON_LEFT);
