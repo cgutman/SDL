@@ -51,6 +51,7 @@ struct SDL_Haptic
 
     struct haptic_hwdata *hwdata;   // Driver dependent
     int ref_count;                  // Count for multiple opens
+    bool emulated_rumble;           // Emulated haptic device using joystick rumble
 
     SDL_HapticEffectID rumble_id;   // ID of rumble effect for simple rumble API.
     SDL_HapticEffect rumble_effect; // Rumble effect.

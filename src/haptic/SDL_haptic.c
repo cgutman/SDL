@@ -300,6 +300,12 @@ SDL_Haptic *SDL_OpenHapticFromMouse(void)
     return SDL_OpenHaptic(device_index);
 }
 
+static bool SDL_IsJoystickHapticEmulationSupported(SDL_Joystick *joystick)
+{
+    SDL_PropertiesID props = SDL_GetJoystickProperties(joystick);
+    return SDL_GetBooleanProperty(props, SDL_PROP_JOYSTICK_CAP_RUMBLE_BOOLEAN, false);
+}
+
 bool SDL_IsJoystickHaptic(SDL_Joystick *joystick)
 {
     bool result = false;
@@ -314,6 +320,10 @@ bool SDL_IsJoystickHaptic(SDL_Joystick *joystick)
             #else
             result = SDL_SYS_JoystickIsHaptic(joystick);
             #endif
+        }
+
+        if (!result && SDL_IsJoystickHapticEmulationSupported(joystick)) {
+            result = true;
         }
     }
     SDL_UnlockJoysticks();
@@ -338,11 +348,11 @@ SDL_Haptic *SDL_OpenHapticFromJoystick(SDL_Joystick *joystick)
         hapticlist = SDL_haptics;
         // Check to see if joystick's haptic is already open
         while (hapticlist) {
+            if ((hapticlist->emulated_rumble && (SDL_Joystick *)hapticlist->hwdata == joystick) ||
             #ifdef SDL_JOYSTICK_HIDAPI
-            if (SDL_SYS_JoystickSameHaptic(hapticlist, joystick) || SDL_HIDAPI_JoystickSameHaptic(hapticlist, joystick)) {
-            #else
-            if (SDL_SYS_JoystickSameHaptic(hapticlist, joystick)) {
+                SDL_HIDAPI_JoystickSameHaptic(hapticlist, joystick) ||
             #endif
+                SDL_SYS_JoystickSameHaptic(hapticlist, joystick)) {
                 haptic = hapticlist;
                 ++haptic->ref_count;
                 SDL_UnlockJoysticks();
@@ -374,11 +384,33 @@ SDL_Haptic *SDL_OpenHapticFromJoystick(SDL_Joystick *joystick)
         } else
         #endif
         if (!SDL_SYS_HapticOpenFromJoystick(haptic, joystick)) {
-            SDL_SetError("Haptic: SDL_SYS_HapticOpenFromJoystick failed.");
-            SDL_SetObjectValid(haptic, SDL_OBJECT_TYPE_HAPTIC, false);
-            SDL_free(haptic);
-            SDL_UnlockJoysticks();
-            return NULL;
+            if (SDL_IsJoystickHapticEmulationSupported(joystick)) {
+                const char *name = SDL_GetJoystickName(joystick);
+                if (!name) {
+                    name = "Emulated Joystick Haptic";
+                }
+
+                // Set up an emulated haptic device using rumble
+                haptic->emulated_rumble = true;
+                haptic->hwdata = (struct haptic_hwdata *)joystick;
+                haptic->name = SDL_strdup(name);
+                haptic->supported = SDL_HAPTIC_LEFTRIGHT;
+                haptic->neffects = 1;
+                haptic->nplaying = 1;
+                haptic->effects = SDL_calloc(1, sizeof(struct haptic_effect));
+                if (!haptic->effects) {
+                    SDL_free(haptic);
+                    SDL_UnlockJoysticks();
+                    SDL_OutOfMemory();
+                    return NULL;
+                }
+            } else {
+                SDL_SetError("Haptic: SDL_SYS_HapticOpenFromJoystick failed.");
+                SDL_SetObjectValid(haptic, SDL_OBJECT_TYPE_HAPTIC, false);
+                SDL_free(haptic);
+                SDL_UnlockJoysticks();
+                return NULL;
+            }
         }
         SDL_assert(haptic->instance_id != 0);
     }
@@ -434,6 +466,7 @@ void SDL_CloseHaptic(SDL_Haptic *haptic)
         SDL_HIDAPI_HapticClose(haptic);
     } else
     #endif
+    if (!haptic->emulated_rumble)
     {
         // Close it, properly removing effects if needed
         for (i = 0; i < haptic->neffects; i++) {
@@ -550,7 +583,7 @@ SDL_HapticEffectID SDL_CreateHapticEffect(SDL_Haptic *haptic, const SDL_HapticEf
         if (haptic->effects[i].hweffect == NULL) {
 
             // Now let the backend create the real effect
-            if (!SDL_SYS_HapticNewEffect(haptic, &haptic->effects[i], effect)) {
+            if (!haptic->emulated_rumble && !SDL_SYS_HapticNewEffect(haptic, &haptic->effects[i], effect)) {
                 return -1; // Backend failed to create effect
             }
 
@@ -597,7 +630,7 @@ bool SDL_UpdateHapticEffect(SDL_Haptic *haptic, SDL_HapticEffectID effect, const
     #endif
 
     // Updates the effect
-    if (!SDL_SYS_HapticUpdateEffect(haptic, &haptic->effects[effect], data)) {
+    if (!haptic->emulated_rumble && !SDL_SYS_HapticUpdateEffect(haptic, &haptic->effects[effect], data)) {
         return false;
     }
 
@@ -620,6 +653,13 @@ bool SDL_RunHapticEffect(SDL_Haptic *haptic, SDL_HapticEffectID effect, Uint32 i
         return false;
     }
 
+    if (haptic->emulated_rumble) {
+        return SDL_RumbleJoystick((SDL_Joystick *)haptic->hwdata,
+                                  haptic->effects[effect].effect.leftright.large_magnitude,
+                                  haptic->effects[effect].effect.leftright.small_magnitude,
+                                  haptic->effects[effect].effect.leftright.length);
+    }
+
     // Run the effect
     if (!SDL_SYS_HapticRunEffect(haptic, &haptic->effects[effect], iterations)) {
         return false;
@@ -640,6 +680,10 @@ bool SDL_StopHapticEffect(SDL_Haptic *haptic, SDL_HapticEffectID effect)
 
     if (!ValidEffect(haptic, effect)) {
         return false;
+    }
+
+    if (haptic->emulated_rumble) {
+        return SDL_RumbleJoystick((SDL_Joystick *)haptic->hwdata, 0, 0, 0);
     }
 
     // Stop the effect
@@ -802,6 +846,10 @@ bool SDL_StopHapticEffects(SDL_Haptic *haptic)
         return SDL_HIDAPI_HapticStopAll(haptic);
     }
     #endif
+
+    if (haptic->emulated_rumble) {
+        return SDL_RumbleJoystick((SDL_Joystick *)haptic->hwdata, 0, 0, 0);
+    }
 
     return SDL_SYS_HapticStopAll(haptic);
 }
